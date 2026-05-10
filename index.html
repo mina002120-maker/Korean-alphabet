@@ -11,7 +11,7 @@
   <!-- 교체하세요. 예: https://script.google.com/macros/s/AKfy.../exec   -->
   <!-- ════════════════════════════════════════════════════════════════ -->
   <script>
-    window.GAS_API_URL = 'YOUR_GAS_WEB_APP_URL_HERE';
+    window.GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwwJ0VjcE5ACwLo5-ai9LiRU4KtVmvlZtXcplMP0Fny5DcRCjUZcqfJm62J2wD3edbj/exec';
   </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -2049,14 +2049,18 @@ const App = () => {
   };
 
   // ── 음성 녹음 (STT) ───────────────────────────────────────
+  const recTimeoutRef = React.useRef(null);
+
   const startRecording = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       alert('음성 인식은 Chrome 브라우저에서만 사용할 수 있어요!');
       return;
     }
+    // 이미 녹음 중이면 수동 종료
     if (isRecording) {
-      try { if (recognitionRef.current) recognitionRef.current.stop(); } catch(e) {}
+      clearTimeout(recTimeoutRef.current);
+      try { recognitionRef.current.stop(); } catch(e) {}
       return;
     }
     initAudio();
@@ -2064,85 +2068,67 @@ const App = () => {
     recognitionRef.current = recognition;
     recognition.lang = 'ko-KR';
     recognition.continuous = false;
-    recognition.interimResults = true;  // 실시간 중간 결과 표시
-    recognition.maxAlternatives = 3;
+    recognition.interimResults = false; // 최종 결과만 (안정적)
+    recognition.maxAlternatives = 1;
 
-    let finalResultReceived = false;
+    let captured = '';
 
     setIsRecording(true);
     setVoiceText('');
     setVoiceSaved(false);
     setVoiceFeedback(null);
 
-    try {
-      recognition.start();
-    } catch (e) {
+    try { recognition.start(); } catch(e) {
       setIsRecording(false);
-      setVoiceText('(\uB179\uC74C \uC2DC\uC791 \uC2E4\uD328. \uB2E4\uC2DC \uB208\uB7EC\uC8FC\uC138\uC694)');
+      setVoiceText('(\uB179\uC74C \uC2DC\uC791 \uC2E4\uD328 \u2014 \uB2E4\uC2DC \uB208\uB7EC\uC8FC\uC138\uC694)');
       setVoiceFeedback('retry');
       return;
     }
 
+    // 8초 후 자동 종료
+    recTimeoutRef.current = setTimeout(() => {
+      try { recognition.stop(); } catch(e) {}
+    }, 8000);
+
     recognition.onresult = (e) => {
-      let interim = '';
-      let final = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          final += e.results[i][0].transcript;
-        } else {
-          interim += e.results[i][0].transcript;
-        }
-      }
-      // 중간 결과: 듣는 중임을 시각적으로 표시
-      if (interim && !final) {
-        setVoiceText('\uB4E3\uB294 \uC911... ' + interim);
-      }
-      // 최종 결과 처리
-      if (final) {
-        finalResultReceived = true;
-        setVoiceText(final);
-        setIsRecording(false);
-        const fb = evaluatePronunciation(final, currentTask);
-        setVoiceFeedback(fb);
-        setVoiceRecords(prev => [...prev, { task: currentTask ? currentTask.char : '', text: final }]);
-        callGAS('saveVoiceRecord', {
-          name: studentName,
-          level: levelData[level] ? levelData[level].name : '',
-          task: currentTask ? currentTask.char : '',
-          text: final
-        })
-          .then(() => setVoiceSaved(true))
-          .catch(() => setVoiceSaved(true));
+      if (e.results && e.results.length > 0) {
+        captured = e.results[e.results.length - 1][0].transcript.trim();
       }
     };
 
     recognition.onerror = (err) => {
+      clearTimeout(recTimeoutRef.current);
       setIsRecording(false);
       if (err.error === 'no-speech') {
-        setVoiceText('(\uB9D0\uC18C\uB9AC\uAC00 \uAC10\uC9C0\uB418\uC9C0 \uC54A\uC558\uC5B4\uC694. \uB2E4\uC2DC \uB208\uB7EC \uC2DC\uB3C4\uD574\uC8FC\uC138\uC694)');
+        setVoiceText('(\uB9D0\uC18C\uB9AC \uBBF8\uAC10\uC9C0 \u2014 \uB2E4\uC2DC \uB208\uB7EC\uC8FC\uC138\uC694)');
         setVoiceFeedback('retry');
       } else if (err.error === 'not-allowed') {
-        alert('\uB9C8\uC774\uD06C \uAD8C\uD55C\uC774 \uD544\uC694\uD574\uC694. \uBE0C\uB77C\uC6B0\uC800 \uC124\uC815\uC5D0\uC11C \uD5C8\uC6A9\uD574\uC8FC\uC138\uC694!');
+        alert('\uB9C8\uC774\uD06C \uAD8C\uD55C\uC774 \uD544\uC694\uD574\uC694!');
       } else if (err.error === 'network') {
-        setVoiceText('(\uB124\uD2B8\uC6CC\uD06C \uC624\uB958. \uC778\uD130\uB137 \uC5F0\uACB0\uC744 \uD655\uC778\uD574\uC8FC\uC138\uC694)');
-        setVoiceFeedback('retry');
-      } else if (err.error !== 'aborted') {
-        setVoiceText('(\uC624\uB958 ' + err.error + '. \uB2E4\uC2DC \uC2DC\uB3C4\uD574\uC8FC\uC138\uC694)');
+        setVoiceText('(\uB124\uD2B8\uC6CC\uD06C \uC624\uB958 \u2014 \uC778\uD130\uB137\uC744 \uD655\uC778\uD574\uC8FC\uC138\uC694)');
         setVoiceFeedback('retry');
       }
+      // aborted: 사용자 수동 중지, 조용히 처리
     };
 
     recognition.onend = () => {
+      clearTimeout(recTimeoutRef.current);
       setIsRecording(false);
-      if (!finalResultReceived) {
-        setVoiceText(prev => {
-          if (!prev || prev.startsWith('\uB4E3\uB294 \uC911')) {
-            return '(\uC778\uC2DD\uB418\uC9C0 \uC54A\uC558\uC5B4\uC694. \uBC84\uD2BC\uC744 \uB20C\uB7EC \uB2E4\uC2DC \uC2DC\uB3C4\uD574\uC8FC\uC138\uC694)';
-          }
-          return prev;
-        });
-        setVoiceFeedback(prev => prev || 'retry');
+      if (!captured) {
+        setVoiceText('(\uC778\uC2DD \uC2E4\uD328 \u2014 \uB2E4\uC2DC \uB208\uB7EC \uD06C\uAC8C \uB9D0\uD574\uBD10\uC138\uC694)');
+        setVoiceFeedback('retry');
+        return;
       }
+      setVoiceText(captured);
+      const fb = evaluatePronunciation(captured, currentTask);
+      setVoiceFeedback(fb);
+      setVoiceRecords(prev => [...prev, { task: currentTask ? currentTask.char : '', text: captured }]);
+      callGAS('saveVoiceRecord', {
+        name: studentName,
+        level: levelData[level] ? levelData[level].name : '',
+        task: currentTask ? currentTask.char : '',
+        text: captured
+      }).then(() => setVoiceSaved(true)).catch(() => setVoiceSaved(true));
     };
   };
 
