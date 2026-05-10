@@ -11,7 +11,7 @@
   <!-- 교체하세요. 예: https://script.google.com/macros/s/AKfy.../exec   -->
   <!-- ════════════════════════════════════════════════════════════════ -->
   <script>
-    window.GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwwJ0VjcE5ACwLo5-ai9LiRU4KtVmvlZtXcplMP0Fny5DcRCjUZcqfJm62J2wD3edbj/exec';
+    window.GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwg2nEIHy-O_mwsbczHOeInjdHKF8AmQNoVccmBf-t8AcAGZJoOPF507ki0Z_txiTVl/exec';
   </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -2049,46 +2049,31 @@ const App = () => {
   };
 
   // ── 음성 녹음 (STT) ───────────────────────────────────────
-  const recTimeoutRef = React.useRef(null);
+  const recTimeoutRef  = React.useRef(null);
+  const retryCountRef  = React.useRef(0);
+  const MAX_RETRY = 2; // 인식 실패 시 자동 재시도 횟수
 
-  const startRecording = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      alert('음성 인식은 Chrome 브라우저에서만 사용할 수 있어요!');
-      return;
-    }
-    // 이미 녹음 중이면 수동 종료
-    if (isRecording) {
-      clearTimeout(recTimeoutRef.current);
-      try { recognitionRef.current.stop(); } catch(e) {}
-      return;
-    }
-    initAudio();
+  const _doRecord = (SR, attempt) => {
     const recognition = new SR();
     recognitionRef.current = recognition;
     recognition.lang = 'ko-KR';
     recognition.continuous = false;
-    recognition.interimResults = false; // 최종 결과만 (안정적)
+    recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
     let captured = '';
 
-    setIsRecording(true);
-    setVoiceText('');
-    setVoiceSaved(false);
-    setVoiceFeedback(null);
-
     try { recognition.start(); } catch(e) {
       setIsRecording(false);
-      setVoiceText('(\uB179\uC74C \uC2DC\uC791 \uC2E4\uD328 \u2014 \uB2E4\uC2DC \uB208\uB7EC\uC8FC\uC138\uC694)');
+      setVoiceText('\uB2E4\uC2DC \uB208\uB7EC\uC8FC\uC138\uC694');
       setVoiceFeedback('retry');
       return;
     }
 
-    // 8초 후 자동 종료
+    // 단모음 인식을 위해 충분한 대기 시간 (10초)
     recTimeoutRef.current = setTimeout(() => {
       try { recognition.stop(); } catch(e) {}
-    }, 8000);
+    }, 10000);
 
     recognition.onresult = (e) => {
       if (e.results && e.results.length > 0) {
@@ -2098,38 +2083,64 @@ const App = () => {
 
     recognition.onerror = (err) => {
       clearTimeout(recTimeoutRef.current);
-      setIsRecording(false);
-      if (err.error === 'no-speech') {
-        setVoiceText('(\uB9D0\uC18C\uB9AC \uBBF8\uAC10\uC9C0 \u2014 \uB2E4\uC2DC \uB208\uB7EC\uC8FC\uC138\uC694)');
-        setVoiceFeedback('retry');
-      } else if (err.error === 'not-allowed') {
-        alert('\uB9C8\uC774\uD06C \uAD8C\uD55C\uC774 \uD544\uC694\uD574\uC694!');
+      if (err.error === 'not-allowed') {
+        setIsRecording(false);
+        alert('\uB9C8\uC774\uD06C \uAD8C\uD55C\uC774 \uD544\uC694\uD574\uC694! \uBE0C\uB77C\uC6B0\uC800 \uC8FC\uC18C\uCC3D \uC561\uBC14\uC758 \uD0C8\uC2EC\uB9C8\uD06C \uC544\uC774\uCF58\uC744 \uD074\uB9AD\uD574 \uD5C8\uC6A9\uD574\uC8FC\uC138\uC694.');
       } else if (err.error === 'network') {
-        setVoiceText('(\uB124\uD2B8\uC6CC\uD06C \uC624\uB958 \u2014 \uC778\uD130\uB137\uC744 \uD655\uC778\uD574\uC8FC\uC138\uC694)');
+        setIsRecording(false);
+        setVoiceText('\uB124\uD2B8\uC6CC\uD06C \uC624\uB958 \u2014 \uC778\uD130\uB137 \uC5F0\uACB0\uC744 \uD655\uC778\uD574\uC8FC\uC138\uC694');
         setVoiceFeedback('retry');
       }
-      // aborted: 사용자 수동 중지, 조용히 처리
+      // no-speech / aborted: onend 에서 재시도 처리
     };
 
     recognition.onend = () => {
       clearTimeout(recTimeoutRef.current);
-      setIsRecording(false);
-      if (!captured) {
-        setVoiceText('(\uC778\uC2DD \uC2E4\uD328 \u2014 \uB2E4\uC2DC \uB208\uB7EC \uD06C\uAC8C \uB9D0\uD574\uBD10\uC138\uC694)');
+      if (captured) {
+        // 인식 성공
+        setIsRecording(false);
+        setVoiceText(captured);
+        const fb = evaluatePronunciation(captured, currentTask);
+        setVoiceFeedback(fb);
+        setVoiceRecords(prev => [...prev, { task: currentTask ? currentTask.char : '', text: captured }]);
+        callGAS('saveVoiceRecord', {
+          name: studentName,
+          level: levelData[level] ? levelData[level].name : '',
+          task: currentTask ? currentTask.char : '',
+          text: captured
+        }).then(() => setVoiceSaved(true)).catch(() => setVoiceSaved(true));
+      } else if (attempt < MAX_RETRY) {
+        // 인식 실패 → 자동 재시도
+        const next = attempt + 1;
+        setVoiceText('\uB2E4\uC2DC \uD06C\uAC8C \uB9D0\uD574\uBD10\uC138\uC694... (' + next + '/' + MAX_RETRY + ')');
+        setTimeout(() => _doRecord(SR, next), 400);
+      } else {
+        // 최대 재시도 초과
+        setIsRecording(false);
+        setVoiceText('\uB2E4\uC2DC \uD06C\uAC8C \uB9D0\uD574\uBD10\uC138\uC694');
         setVoiceFeedback('retry');
-        return;
       }
-      setVoiceText(captured);
-      const fb = evaluatePronunciation(captured, currentTask);
-      setVoiceFeedback(fb);
-      setVoiceRecords(prev => [...prev, { task: currentTask ? currentTask.char : '', text: captured }]);
-      callGAS('saveVoiceRecord', {
-        name: studentName,
-        level: levelData[level] ? levelData[level].name : '',
-        task: currentTask ? currentTask.char : '',
-        text: captured
-      }).then(() => setVoiceSaved(true)).catch(() => setVoiceSaved(true));
     };
+  };
+
+  const startRecording = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      alert('\uC74C\uC131 \uC778\uC2DD\uC740 Chrome \uBE0C\uB77C\uC6B0\uC800\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uD560 \uC218 \uC788\uC5B4\uC694!');
+      return;
+    }
+    if (isRecording) {
+      clearTimeout(recTimeoutRef.current);
+      try { recognitionRef.current.stop(); } catch(e) {}
+      return;
+    }
+    initAudio();
+    retryCountRef.current = 0;
+    setIsRecording(true);
+    setVoiceText('');
+    setVoiceSaved(false);
+    setVoiceFeedback(null);
+    _doRecord(SR, 0);
   };
 
   const toggleMute = () => {
